@@ -66,7 +66,10 @@ pub struct Socks5Adapter {
     auth: Option<(String, String)>,
     /// Built once at construction (rustls ClientConfig + root store are
     /// expensive); `TlsLayer::connect` is safe to call concurrently.
+    #[cfg(feature = "tls")]
     tls_layer: Option<meow_transport::tls::TlsLayer>,
+    #[cfg(not(feature = "tls"))]
+    tls_requested: bool,
     /// Whether `udp: true` was configured — gates UDP ASSOCIATE.
     udp: bool,
     health: ProxyHealth,
@@ -88,6 +91,9 @@ impl Socks5Adapter {
         // Hoisted out of the dial path: TlsLayer::new clones the webpki root
         // store and builds verifier + crypto provider — per-adapter, not
         // per-connection (same pattern as TrojanAdapter::new).
+        #[cfg(not(feature = "tls"))]
+        let _ = skip_cert_verify;
+        #[cfg(feature = "tls")]
         let tls_layer = tls.then(|| {
             use meow_transport::tls::{TlsConfig, TlsLayer};
             let tls_cfg = TlsConfig {
@@ -104,7 +110,10 @@ impl Socks5Adapter {
             server: SmolStr::from(server),
             port,
             auth,
+            #[cfg(feature = "tls")]
             tls_layer,
+            #[cfg(not(feature = "tls"))]
+            tls_requested: tls,
             udp: false,
             health: ProxyHealth::new(),
             dialer,
@@ -136,17 +145,27 @@ impl Socks5Adapter {
         &self,
         stream: Box<dyn meow_transport::Stream>,
     ) -> Result<Box<dyn meow_transport::Stream>> {
-        if let Some(tls_layer) = &self.tls_layer {
-            use meow_transport::Transport;
-            tls_layer
-                .connect(Box::new(stream))
-                .await
-                .map_err(|e| match e {
-                    meow_transport::TransportError::Io(e) => MeowError::Io(e),
-                    other => MeowError::Proxy(other.to_string()),
-                })
-        } else {
+        #[cfg(not(feature = "tls"))]
+        {
+            if self.tls_requested {
+                return Err(MeowError::Proxy("proxy TLS support is disabled".into()));
+            }
             Ok(stream)
+        }
+        #[cfg(feature = "tls")]
+        {
+            if let Some(tls_layer) = &self.tls_layer {
+                use meow_transport::Transport;
+                tls_layer
+                    .connect(Box::new(stream))
+                    .await
+                    .map_err(|e| match e {
+                        meow_transport::TransportError::Io(e) => MeowError::Io(e),
+                        other => MeowError::Proxy(other.to_string()),
+                    })
+            } else {
+                Ok(stream)
+            }
         }
     }
 
@@ -719,7 +738,7 @@ impl ProxyAdapter for Socks5Adapter {
             Some(_) => {
                 return Err(MeowError::NotSupported(
                     "socks5: domain UDP target exceeds ATYP_DOMAIN length".into(),
-                ))
+                ));
             }
             None => None,
         };
@@ -1226,9 +1245,11 @@ mod tests {
 
     #[test]
     fn udp_still_advertised_under_direct_dialer() {
-        assert!(make_adapter("127.0.0.1", 1080, None)
-            .with_udp(true)
-            .support_udp());
+        assert!(
+            make_adapter("127.0.0.1", 1080, None)
+                .with_udp(true)
+                .support_udp()
+        );
     }
 
     /// Captures the `internal` flag the adapter hands to its dialer —
@@ -2465,7 +2486,7 @@ mod tests {
     #[tokio::test]
     async fn socks5_udp_associate_round_trip() {
         use tokio::net::UdpSocket;
-        use tokio::time::{timeout, Duration};
+        use tokio::time::{Duration, timeout};
 
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let ctrl_addr = listener.local_addr().unwrap();
@@ -2570,5 +2591,24 @@ mod tests {
             panic!("empty domain BND must error");
         };
         assert!(e.to_string().contains("empty domain"), "{e}");
+    }
+}
+
+#[cfg(all(test, not(feature = "tls")))]
+mod no_tls_tests {
+    use super::*;
+    #[tokio::test]
+    async fn requested_tls_is_rejected_without_downgrade() {
+        let adapter = Socks5Adapter::new(
+            "test",
+            "localhost",
+            1,
+            None,
+            true,
+            false,
+            Arc::new(crate::dialer::DirectDialer),
+        );
+        let (stream, _) = tokio::io::duplex(64);
+        assert!(adapter.wrap_tls(Box::new(stream)).await.is_err());
     }
 }

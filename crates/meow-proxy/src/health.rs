@@ -5,7 +5,9 @@ use meow_common::{
     failure_reason, AdapterType, ChainTarget, ChainVerdict, MeowError, Metadata, Proxy,
     ProxyAdapter, ProxyConn, ProxyPacketConn,
 };
+#[cfg(feature = "tls")]
 use meow_transport::tls::{TlsConfig, TlsLayer};
+#[cfg(feature = "tls")]
 use meow_transport::Transport as _;
 use smol_str::SmolStr;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -850,11 +852,16 @@ async fn probe_once(
     parsed: ParsedUrl,
     ranges: Vec<(u16, u16)>,
 ) -> Result<(), String> {
+    #[cfg(not(feature = "tls"))]
+    if parsed.https {
+        return Err("HTTPS health probes require the tls feature".into());
+    }
     let conn = adapter
         .dial_tcp(&metadata)
         .await
         .map_err(|e| format!("dial: {e}"))?;
 
+    #[cfg(feature = "tls")]
     if parsed.https {
         // Same TlsLayer the proxies dial with (BoringSSL by default). Both
         // backends memoise the TLS context per (alpn, skip_cert_verify), so
@@ -865,10 +872,9 @@ async fn probe_once(
             .connect(Box::new(conn))
             .await
             .map_err(|e| format!("tls: {e}"))?;
-        send_get_and_check(tls, &parsed, &ranges).await
-    } else {
-        send_get_and_check(conn, &parsed, &ranges).await
+        return send_get_and_check(tls, &parsed, &ranges).await;
     }
+    send_get_and_check(conn, &parsed, &ranges).await
 }
 
 async fn send_get_and_check<S>(

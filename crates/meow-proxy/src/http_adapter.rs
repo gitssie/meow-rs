@@ -48,7 +48,10 @@ pub struct HttpAdapter {
     auth: Option<(String, String)>,
     /// Built once at construction (rustls ClientConfig + root store are
     /// expensive); `TlsLayer::connect` is safe to call concurrently.
+    #[cfg(feature = "tls")]
     tls_layer: Option<meow_transport::tls::TlsLayer>,
+    #[cfg(not(feature = "tls"))]
+    tls_requested: bool,
     /// Extra headers injected into the CONNECT request only.
     extra_headers: Vec<(String, String)>,
     health: ProxyHealth,
@@ -76,6 +79,9 @@ impl HttpAdapter {
         // Hoisted out of the dial path: TlsLayer::new clones the webpki root
         // store and builds verifier + crypto provider — per-adapter, not
         // per-connection (same pattern as TrojanAdapter::new).
+        #[cfg(not(feature = "tls"))]
+        let _ = skip_cert_verify;
+        #[cfg(feature = "tls")]
         let tls_layer = tls.then(|| {
             use meow_transport::tls::{TlsConfig, TlsLayer};
             let tls_cfg = TlsConfig {
@@ -92,7 +98,10 @@ impl HttpAdapter {
             server: SmolStr::from(server),
             port,
             auth,
+            #[cfg(feature = "tls")]
             tls_layer,
+            #[cfg(not(feature = "tls"))]
+            tls_requested: tls,
             extra_headers,
             health: ProxyHealth::new(),
             dialer,
@@ -117,17 +126,27 @@ impl HttpAdapter {
         &self,
         stream: Box<dyn meow_transport::Stream>,
     ) -> Result<Box<dyn meow_transport::Stream>> {
-        if let Some(tls_layer) = &self.tls_layer {
-            use meow_transport::Transport;
-            tls_layer
-                .connect(Box::new(stream))
-                .await
-                .map_err(|e| match e {
-                    meow_transport::TransportError::Io(e) => MeowError::Io(e),
-                    other => MeowError::Proxy(other.to_string()),
-                })
-        } else {
+        #[cfg(not(feature = "tls"))]
+        {
+            if self.tls_requested {
+                return Err(MeowError::Proxy("proxy TLS support is disabled".into()));
+            }
             Ok(stream)
+        }
+        #[cfg(feature = "tls")]
+        {
+            if let Some(tls_layer) = &self.tls_layer {
+                use meow_transport::Transport;
+                tls_layer
+                    .connect(Box::new(stream))
+                    .await
+                    .map_err(|e| match e {
+                        meow_transport::TransportError::Io(e) => MeowError::Io(e),
+                        other => MeowError::Proxy(other.to_string()),
+                    })
+            } else {
+                Ok(stream)
+            }
         }
     }
 
@@ -856,5 +875,25 @@ mod tests {
             }
         }
         assert!(failures.is_empty(), "{}", failures.join("\n"));
+    }
+}
+
+#[cfg(all(test, not(feature = "tls")))]
+mod no_tls_tests {
+    use super::*;
+    #[tokio::test]
+    async fn requested_tls_is_rejected_without_downgrade() {
+        let adapter = HttpAdapter::new(
+            "test",
+            "localhost",
+            1,
+            None,
+            true,
+            false,
+            vec![],
+            Arc::new(crate::dialer::DirectDialer),
+        );
+        let (stream, _) = tokio::io::duplex(64);
+        assert!(adapter.wrap_tls(Box::new(stream)).await.is_err());
     }
 }

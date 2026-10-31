@@ -9,13 +9,15 @@ repository.workspace = true
 homepage.workspace = true
 
 [features]
-default = ["ss", "trojan", "vless", "vless-vision", "vless-encryption", "ech-tls-tunnel", "vmess", "snell", "hysteria2", "mux", "kcptun", "public-suffix", "shadow-tls", "restls", "jls", "gost-plugin"]
+default = ["tls", "ss", "trojan", "vless", "vless-vision", "vless-encryption", "ech-tls-tunnel", "vmess", "snell", "hysteria2", "mux", "kcptun", "public-suffix", "shadow-tls", "restls", "jls", "gost-plugin"]
+# TLS-wrapped upstream proxies are optional for plain HTTP/SOCKS5 embedders.
+tls = ["meow-transport/tls"]
 # The embedded public-suffix list (`psl`) behind load-balance
 # `consistent-hashing`'s eTLD+1 key — about 500 KB of lookup tables, so it
 # is in the app `full` profile and kept out of `minimal` (ADR-0007
 # binary-size caps), where the key falls back to the last two labels.
 public-suffix = ["dep:psl"]
-ss = ["dep:shadowsocks", "meow-transport/simple-obfs"]
+ss = ["tls", "dep:shadowsocks", "meow-transport/simple-obfs"]
 # Built-in SIP003 plugin transports on the `ss` adapter. `minimal` keeps
 # only simple-obfs + v2ray-plugin (bundled in `ss`); these four are opt-in
 # and re-bundled into `default`/`full` so release binaries are unchanged
@@ -26,9 +28,9 @@ shadow-tls = ["ss", "meow-transport/shadow-tls"]
 restls = ["ss", "meow-transport/restls"]
 jls = ["ss", "meow-transport/jls"]
 gost-plugin = ["ss", "mux"]
-trojan = []
-vless = []
-vmess = ["dep:md-5", "dep:hmac", "dep:aes", "dep:boring", "dep:crc32fast"]
+trojan = ["tls"]
+vless = ["tls"]
+vmess = ["tls", "dep:md-5", "dep:hmac", "dep:aes", "dep:boring", "dep:crc32fast"]
 vless-vision = ["vless"]
 # VLESS post-quantum Encryption layer (`encryption: mlkem768x25519plus...`),
 # the ML-KEM-768 + X25519 hybrid handshake used by Xray-core / mihomo. Adds the
@@ -49,16 +51,16 @@ vless-encryption = [
 # the SS simple-obfs module), UDP-over-TCP, and an opt-in v4–v6 reuse pool
 # (CommandConnectV2). v6's PSK-derived traffic-shaping profile is seeded
 # with BLAKE2b.
-snell = ["dep:argon2", "dep:boring", "dep:blake2", "meow-transport/simple-obfs"]
+snell = ["tls", "dep:argon2", "dep:boring", "dep:blake2", "meow-transport/simple-obfs"]
 # Opt-in anytls outbound (uses the vendored `meow-anytls` crate, lib name
 # `anytls_rs`). The client's TLS is supplied by meow-transport's BoringSSL
 # TlsLayer through anytls-rs's `TlsConnect` hook, so no second TLS stack.
-anytls = ["dep:meow-anytls"]
+anytls = ["tls", "dep:meow-anytls"]
 # Hysteria2 outbound implemented in-tree on top of quiche (BoringSSL-native
 # QUIC + HTTP/3), so it links no rustls and no second crypto library.
-hysteria2 = ["dep:quiche", "dep:boring", "dep:blake2", "dep:webpki-root-certs", "dep:tokio-util"]
+hysteria2 = ["tls", "dep:quiche", "dep:boring", "dep:blake2", "dep:webpki-root-certs", "dep:tokio-util"]
 # TrustTunnel H2 client outbound; opt-in pending upstream profile review (#727).
-trusttunnel = ["dep:h2", "dep:tokio-util"]
+trusttunnel = ["tls", "dep:h2", "dep:tokio-util"]
 # The HTTP/3 transport for that outbound (`quic: true`). Rides quiche on the
 # same vendored BoringSSL as `hysteria2`, so it links no second crypto
 # library — but quiche is not in an H2-only build's graph at all, so this is
@@ -87,7 +89,7 @@ kcptun = ["ss", "mux", "dep:tokio-util", "meow-transport/kcptun"]
 [dependencies]
 meow-common = { workspace = true }
 meow-dns = { workspace = true }
-meow-transport = { workspace = true, features = ["tls", "ws"] }
+meow-transport = { workspace = true, features = ["ws"] }
 tokio = { workspace = true }
 tokio-util = { workspace = true, optional = true }
 yamux = { workspace = true, optional = true }
